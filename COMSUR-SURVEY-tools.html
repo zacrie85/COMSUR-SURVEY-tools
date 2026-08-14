@@ -3304,8 +3304,27 @@ async function startSyncListeners(){
             renderSavedFiles();
 
             // Auto-zoom to the new layer
-            if(visible && geoJsonLayer.getBounds().isValid()){
-              map.fitBounds(geoJsonLayer.getBounds().pad(0.1));
+            if(visible){
+              try{
+                if(typeof geoJsonLayer.getBounds==='function' && geoJsonLayer.getBounds().isValid()){
+                  map.fitBounds(geoJsonLayer.getBounds().pad(0.1));
+                }else{
+                  var bounds=L.latLngBounds([]);
+                  geojson.features.forEach(function(f){
+                    if(f.geometry&&f.geometry.coordinates){
+                      var coords=f.geometry.coordinates;
+                      if(f.geometry.type==='Point')bounds.extend([coords[1],coords[0]]);
+                      else if(f.geometry.type==='MultiPoint')coords.forEach(function(c){bounds.extend([c[1],c[0]]);});
+                      else{
+                        var flat=[];
+                        (function extract(c){c.forEach(function(v){if(Array.isArray(v[0]))extract(v);else if(typeof v[0]==='number')flat.push(v);});})(coords);
+                        flat.forEach(function(c){bounds.extend([c[1],c[0]]);});
+                      }
+                    }
+                  });
+                  if(bounds.isValid())map.fitBounds(bounds.pad(0.1));
+                }
+              }catch(e){console.warn('fitBounds error:',e);}
             }
           }catch(e){console.warn('Reconstruct layer error:',e);}
         }
@@ -4491,7 +4510,29 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   if(visible&&geoJsonLayers)geoJsonLayers.addLayer(geoJsonLayer);
   const layerObj = {name:fileName,geojson,layerNames,color,geoJsonLayer,visible,fileId:fileId||null,_layerId:'layer-'+Date.now()+'-'+Math.random().toString(36).substring(2,8),_useCluster:useCluster};
   layers.push(layerObj);
-  if(visible&&geoJsonLayer.getBounds().isValid())map.fitBounds(geoJsonLayer.getBounds().pad(0.1));
+  if(visible){
+    try{
+      if(typeof geoJsonLayer.getBounds==='function' && geoJsonLayer.getBounds().isValid()){
+        map.fitBounds(geoJsonLayer.getBounds().pad(0.1));
+      }else{
+        // Fallback: compute bounds from GeoJSON data directly
+        var bounds=L.latLngBounds([]);
+        geojson.features.forEach(function(f){
+          if(f.geometry&&f.geometry.coordinates){
+            var coords=f.geometry.coordinates;
+            if(f.geometry.type==='Point')bounds.extend([coords[1],coords[0]]);
+            else if(f.geometry.type==='MultiPoint')coords.forEach(function(c){bounds.extend([c[1],c[0]]);});
+            else{
+              var flat=[];
+              (function extract(c){c.forEach(function(v){if(Array.isArray(v[0]))extract(v);else if(typeof v[0]==='number')flat.push(v);});})(coords);
+              flat.forEach(function(c){bounds.extend([c[1],c[0]]);});
+            }
+          }
+        });
+        if(bounds.isValid())map.fitBounds(bounds.pad(0.1));
+      }
+    }catch(e){console.warn('fitBounds error:',e);}
+  }
   renderLayers();
   debouncedSave();
   // Sync layer ke Firestore
