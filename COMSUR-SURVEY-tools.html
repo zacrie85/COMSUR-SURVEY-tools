@@ -650,7 +650,7 @@ window.addEventListener('unhandledrejection',function(ev){
           <span class="text-[11px] font-semibold text-indigo-600">Import dari URL</span>
         </div>
         <div class="flex gap-1.5">
-          <input type="url" id="url-import-input" placeholder="https://contoh.com/data.kml" class="flex-1 text-xs px-2.5 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 bg-white text-gray-700 placeholder-gray-400" />
+          <input type="url" id="url-import-input" placeholder="https://...file.kml / .kmz / .geojson / .gpx" class="flex-1 text-xs px-2.5 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 bg-white text-gray-700 placeholder-gray-400" />
           <button id="btn-url-import" onclick="handleUrlImport()" class="px-3 py-2 bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-all flex items-center gap-1 whitespace-nowrap">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
             Muat
@@ -1021,7 +1021,37 @@ const FOLDER_COLORS = ['#3b82f6','#ef4444','#f97316','#22c55e','#8b5cf6','#ec489
 const POLY_FOLDER_COLORS = ['#10b981','#14b8a6','#06b6d4','#0ea5e9','#6366f1','#8b5cf6','#a855f7','#d946ef'];
 const LAYER_COLORS = ['#3388ff','#e74c3c','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
 
-// Helper: iterate all leaf layers in a geoJsonLayer (handles both old L.geoJSON and new L.layerGroup structure)
+// Helper: get feature color based on Active/Capacity percentage
+function getFeaturePctColor(feature) {
+  var props = feature.properties || {};
+  // Try to find Active and Capacity columns (case-insensitive)
+  var activeVal = null, capVal = null;
+  var keys = Object.keys(props);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i].toLowerCase();
+    if (k === 'active' || k === 'aktif') activeVal = props[keys[i]];
+    if (k === 'capacity' || k === 'kapasitas') capVal = props[keys[i]];
+  }
+  // Also check styleUrl for color hints from KML
+  var styleUrl = props.styleUrl || props['styleUrl'] || '';
+  if (styleUrl.indexOf('#s-r') >= 0) return '#ef4444'; // red 76-100%
+  if (styleUrl.indexOf('#s-y') >= 0) return '#eab308'; // yellow 51-75%
+  if (styleUrl.indexOf('#s-b') >= 0) return '#3b82f6'; // blue 26-50%
+  if (styleUrl.indexOf('#s-g') >= 0) return '#22c55e'; // green 0-25%
+  if (activeVal !== null && capVal !== null) {
+    var a = parseFloat(String(activeVal).replace(/[^0-9.]/g, ''));
+    var c = parseFloat(String(capVal).replace(/[^0-9.]/g, ''));
+    if (!isNaN(a) && !isNaN(c) && c > 0) {
+      var pct = (a / c) * 100;
+      if (pct <= 25) return '#22c55e';
+      if (pct <= 50) return '#3b82f6';
+      if (pct <= 75) return '#eab308';
+      return '#ef4444';
+    }
+  }
+  return null; // no percentage data found
+}
+
 function eachGeoLeafLayer(geoJsonLayer, callback) {
   if (!geoJsonLayer) return;
   // New structure: L.layerGroup([polyLayer, pointClusterGroup/pointLayer])
@@ -3255,7 +3285,8 @@ async function startSyncListeners(){
             const pointLayer=L.geoJSON(pointGeojson,{
               pointToLayer:function(feature,latlng){
                 var name=feature.properties?.name||'';
-                var marker=L.circleMarker(latlng,{radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85});
+                var featColor=getFeaturePctColor(feature)||color;
+                var marker=L.circleMarker(latlng,{radius:7,fillColor:featColor,color:'#fff',weight:2,opacity:1,fillOpacity:0.85});
                 marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
                 // Labels are rendered by CanvasLabelLayer at zoom 15+
                 return marker;
@@ -3827,13 +3858,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       this._map = map;
       this._canvas = L.DomUtil.create('canvas', 'leaflet-canvas-labels');
       this._canvas.style.cssText = 'position:absolute;top:0;left:0;z-index:450;pointer-events:none;'
-      map.getPane('overlayPane').appendChild(this._canvas);
-      map.on('moveend zoomend viewreset', this._draw, this);
+      map.getContainer().appendChild(this._canvas);
+      map.on('moveend zoomend viewreset move', this._draw, this);
       this._resize();
       this._draw();
     },
     onRemove: function(map) {
-      map.off('moveend zoomend viewreset', this._draw, this);
+      map.off('moveend zoomend viewreset move', this._draw, this);
       L.DomUtil.remove(this._canvas);
     },
     _resize: function() {
@@ -4533,8 +4564,9 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   const pointLayer=L.geoJSON(pointGeojson,{
     pointToLayer:function(feature,latlng){
       const name=feature.properties?.name||'';
+      var featColor=getFeaturePctColor(feature)||color;
       const marker=L.circleMarker(latlng,{
-        radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85
+        radius:7,fillColor:featColor,color:'#fff',weight:2,opacity:1,fillOpacity:0.85
       });
       marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
       // Labels are rendered by CanvasLabelLayer at zoom 15+
