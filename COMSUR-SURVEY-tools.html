@@ -3252,22 +3252,12 @@ async function startSyncListeners(){
               }
             });
             const pointGeojson={type:'FeatureCollection',features:pointFeatures};
-            const currentZoom=map.getZoom();
-            const showLabels=currentZoom>=15;
             const pointLayer=L.geoJSON(pointGeojson,{
               pointToLayer:function(feature,latlng){
                 var name=feature.properties?.name||'';
                 var marker=L.circleMarker(latlng,{radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85});
                 marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
-                if(name){
-                  var label=name.length>25?name.substring(0,25)+'…':name;
-                  marker.bindTooltip(label,{permanent:true,direction:'right',offset:[8,-8],className:'geo-label-tooltip',opacity:0.95});
-                  if(!showLabels){
-                    try{marker.closeTooltip();}catch(e){}
-                    var tooltipEl=marker.getTooltip();
-                    if(tooltipEl&&tooltipEl._container)tooltipEl._container.style.display='none';
-                  }
-                }
+                // Labels are rendered by CanvasLabelLayer at zoom 15+
                 return marker;
               },
               onEachFeature:function(feature,layer){}
@@ -3830,13 +3820,101 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   L.control.zoom({position:'bottomright'}).addTo(map);
   geoJsonLayers=L.layerGroup().addTo(map);
   userMarkers=L.layerGroup().addTo(map);
-  // Zoom-based label visibility for performance
-  map.on('zoomend',function(){
-    const z=map.getZoom();
-    document.querySelectorAll('.geo-label-tooltip').forEach(function(el){
-      el.style.display=z>=15?'':'none';
-    });
+  // ===== CANVAS LABEL RENDERER (for 22K+ points performance) =====
+  var canvasLabelLayer = L.Layer.extend({
+    _canvas: null, _ctx: null, _map: null, _frame: null,
+    onAdd: function(map) {
+      this._map = map;
+      this._canvas = L.DomUtil.create('canvas', 'leaflet-canvas-labels');
+      this._canvas.style.cssText = 'position:absolute;top:0;left:0;z-index:450;pointer-events:none;'
+      map.getPane('overlayPane').appendChild(this._canvas);
+      map.on('moveend zoomend viewreset', this._draw, this);
+      this._resize();
+      this._draw();
+    },
+    onRemove: function(map) {
+      map.off('moveend zoomend viewreset', this._draw, this);
+      L.DomUtil.remove(this._canvas);
+    },
+    _resize: function() {
+      var size = this._map.getSize();
+      this._canvas.width = size.x;
+      this._canvas.height = size.y;
+      this._ctx = this._canvas.getContext('2d');
+    },
+    _draw: function() {
+      if (!this._map || !this._ctx) return;
+      var z = this._map.getZoom();
+      var ctx = this._ctx;
+      var canvas = this._canvas;
+      this._resize();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Only draw labels at zoom 15+
+      if (z < 15) return;
+      var bounds = this._map.getBounds();
+      var fontSize = z >= 17 ? 11 : z >= 16 ? 10 : 9;
+      ctx.font = '600 ' + fontSize + 'px Inter, system-ui, Arial, sans-serif';
+      ctx.textBaseline = 'middle';
+      var padding = 3;
+      // Collect all visible labeled points from all layers
+      var items = [];
+      layers.forEach(function(l) {
+        if (!l.visible || !l.geoJsonLayer) return;
+        var pointLayer = l.geoJsonLayer._pointLayer;
+        if (!pointLayer) return;
+        pointLayer.eachLayer(function(marker) {
+          if (!marker.getLatLng) return;
+          var ll = marker.getLatLng();
+          if (!bounds.contains(ll)) return;
+          var name = marker.feature && marker.feature.properties && marker.feature.properties.name;
+          if (!name) return;
+          var pt = this._map.latLngToContainerPoint(ll);
+          items.push({ pt: pt, name: name, color: l.color || '#3388ff' });
+        }.bind(this));
+      }.bind(this));
+      // Simple collision avoidance: skip labels that overlap
+      var placed = [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var text = item.name.length > 22 ? item.name.substring(0, 22) + '\u2026' : item.name;
+        var tw = ctx.measureText(text).width;
+        var boxX = item.pt.x + 10;
+        var boxY = item.pt.y - 8;
+        var boxW = tw + padding * 2;
+        var boxH = fontSize + padding * 2;
+        var overlap = false;
+        for (var j = 0; j < placed.length; j++) {
+          var p = placed[j];
+          if (!(boxX + boxW < p.x || boxX > p.x + p.w || boxY + boxH < p.y || boxY > p.y + p.h)) {
+            overlap = true;
+            break;
+          }
+        }
+        if (!overlap) {
+          placed.push({ x: boxX, y: boxY, w: boxW, h: boxH });
+          // Draw label background
+          ctx.fillStyle = 'rgba(255,255,255,0.88)';
+          ctx.beginPath();
+          if (ctx.roundRect) {
+            ctx.roundRect(boxX, boxY, boxW, boxH, 3);
+          } else {
+            ctx.rect(boxX, boxY, boxW, boxH);
+          }
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+          // Draw label text
+          ctx.fillStyle = '#1e293b';
+          ctx.fillText(text, boxX + padding, boxY + boxH / 2 + 1);
+        }
+      }
+    }
   });
+  var canvasLabels = new canvasLabelLayer();
+  map.addLayer(canvasLabels);
+  // Expose for redraw after layer changes
+  window._redrawCanvasLabels = function() { canvasLabels._draw(); };
   appReady=true;
 
   // Load saved state
@@ -4451,8 +4529,6 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
 
   // Render point features with circleMarker (canvas) + optional clustering
   const pointGeojson={type:'FeatureCollection',features:pointFeatures};
-  const currentZoom=map.getZoom();
-  const showLabels=currentZoom>=15;
 
   const pointLayer=L.geoJSON(pointGeojson,{
     pointToLayer:function(feature,latlng){
@@ -4461,18 +4537,7 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
         radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85
       });
       marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
-      if(name){
-        const label=name.length>25?name.substring(0,25)+'…':name;
-        const tt=marker.bindTooltip(label,{
-          permanent:true,direction:'right',offset:[8,-8],
-          className:'geo-label-tooltip',opacity:0.95
-        });
-        if(!showLabels){
-          try{marker.closeTooltip();}catch(e){}
-          var tooltipEl=marker.getTooltip();
-          if(tooltipEl&&tooltipEl._container)tooltipEl._container.style.display='none';
-        }
-      }
+      // Labels are rendered by CanvasLabelLayer at zoom 15+
       return marker;
     },
     onEachFeature:function(feature,layer){}
@@ -4537,6 +4602,8 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   }
   renderLayers();
   debouncedSave();
+  // Trigger canvas label redraw
+  if(window._redrawCanvasLabels)window._redrawCanvasLabels();
   // Sync layer ke Firestore
   syncLayerToFirestore(layerObj);
 }
