@@ -3978,8 +3978,11 @@ async function handleFileUpload(e){
 
 // ===== URL IMPORT — Import KML/KMZ/GeoJSON/GPX dari URL =====
 const CORS_PROXIES = [
+  url => 'https://projek-survey.web.app/api/proxy?url=' + encodeURIComponent(url),
   url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
-  url => 'https://corsproxy.io/?' + encodeURIComponent(url)
+  url => 'https://corsproxy.io/?' + encodeURIComponent(url),
+  url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
+  url => 'https://thingproxy.freeboard.io/fetch/' + url
 ];
 
 let urlImportHistory = JSON.parse(localStorage.getItem('kmz-url-history') || '[]');
@@ -4070,7 +4073,7 @@ function removeUrlHistory(index) {
 async function fetchFromUrl(url) {
   // Try direct fetch first
   try {
-    showUrlStatus('Mengunduh...', 'blue');
+    showUrlStatus('Mengunduh langsung...', 'blue');
     const resp = await fetch(url, { mode: 'cors' });
     if (resp.ok) return resp;
   } catch(e) {
@@ -4080,16 +4083,19 @@ async function fetchFromUrl(url) {
   // Try CORS proxies
   for (let i = 0; i < CORS_PROXIES.length; i++) {
     try {
-      showUrlStatus('Mengunduh via proxy ' + (i+1) + '/' + CORS_PROXIES.length + '...', 'yellow');
+      showUrlStatus('Proxy ' + (i+1) + '/' + CORS_PROXIES.length + '...', 'yellow');
       const proxyUrl = CORS_PROXIES[i](url);
-      const resp = await fetch(proxyUrl);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const resp = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (resp.ok) return resp;
     } catch(e) {
       continue;
     }
   }
 
-  throw new Error('Gagal mengunduh file. Server memblokir akses (CORS). Coba download file-nya terlebih dahulu, lalu upload manual.');
+  throw new Error('Gagal mengunduh file (semua proxy gagal). Tips: coba paste URL lain, atau download file-nya lalu upload manual.');
 }
 
 async function parseGeoDataFromResponse(response, format) {
