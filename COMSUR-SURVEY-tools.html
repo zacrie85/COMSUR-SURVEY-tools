@@ -11,7 +11,10 @@
 <meta name="apple-mobile-web-app-title" content="KMZ Viewer">
 <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiS01aIFZpZXdlciB2OCIsInNob3J0X25hbWUiOiJLTVogVmlld2VyIiwiZGVzY3JpcHRpb24iOiJQZXRhIFN1cnZleSBJbnRlcmFrdGl2Iiwic3RhcnRfdXJsIjoiLiIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiNmZmZmZmYiLCJ0aGVtZV9jb2xvciI6IiMxMGI5ODEiLCJvcmllbnRhdGlvbiI6InBvcnRyYWl0IiwiaWNvbnMiOlt7InNyYyI6ImRhdGE6aW1hZ2Uvc3ZnK3htbCw8c3ZnIHhtbG5zPSdodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2Zycgdmlld0JveD0nMCAwIDEwMCAxMDAnPjxyZWN0IHdpZHRoPScxMDAnIGhlaWdodD0nMTAwJyByeD0nMjAnIGZpbGw9JyMxMGI5ODEnLz48dGV4dCB4PSc1MCcgeT0nNjInIGZvbnQtc2l6ZT0nNTAnIHRleHQtYW5jaG9yPSdtaWRkbGUnIGZpbGw9J3doaXRlJz7wn5GAPC90ZXh0Pjwvc3ZnPiIsInNpemVzIjoiMTkyeDE5MiIsInR5cGUiOiJpbWFnZS9zdmcreG1sIn1dfQ==">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
@@ -1017,6 +1020,30 @@ const MARKER_COLORS = {gps:'#3b82f6',manual:'#f59e0b',click:'#22c55e'};
 const FOLDER_COLORS = ['#3b82f6','#ef4444','#f97316','#22c55e','#8b5cf6','#ec4899','#06b6d4','#eab308'];
 const POLY_FOLDER_COLORS = ['#10b981','#14b8a6','#06b6d4','#0ea5e9','#6366f1','#8b5cf6','#a855f7','#d946ef'];
 const LAYER_COLORS = ['#3388ff','#e74c3c','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+
+// Helper: iterate all leaf layers in a geoJsonLayer (handles both old L.geoJSON and new L.layerGroup structure)
+function eachGeoLeafLayer(geoJsonLayer, callback) {
+  if (!geoJsonLayer) return;
+  // New structure: L.layerGroup([polyLayer, pointClusterGroup/pointLayer])
+  if (geoJsonLayer._polyLayer) {
+    geoJsonLayer._polyLayer.eachLayer(callback);
+  }
+  if (geoJsonLayer._pointLayer) {
+    geoJsonLayer._pointLayer.eachLayer(callback);
+  }
+  // Fallback: old structure (L.geoJSON directly)
+  if (!geoJsonLayer._polyLayer && !geoJsonLayer._pointLayer) {
+    geoJsonLayer.eachLayer(callback);
+  }
+}
+// Helper: get feature count for a geoJsonLayer
+function getGeoLayerFeatureCount(geoJsonLayer) {
+  if (!geoJsonLayer) return 0;
+  if (geoJsonLayer._pointLayer && geoJsonLayer._polyLayer) {
+    return geoJsonLayer._pointLayer.getLayers().length + geoJsonLayer._polyLayer.getLayers().length;
+  }
+  return geoJsonLayer.getLayers ? geoJsonLayer.getLayers().length : 0;
+}
 
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function sanitizeColor(c){if(!c||typeof c!=='string')return '#22c55e';const s=c.trim();if(/^#[0-9a-fA-F]{3,8}$/.test(s))return s;if(/^(rgb|hsl)a?\(/.test(s))return s;if(/^(red|blue|green|white|black|yellow|orange|purple|pink|cyan|magenta|gray|grey|silver|gold|brown|navy|teal|maroon|olive|lime|aqua|fuchsia|indigo|violet|coral|salmon|tomato|khaki|plum|orchid|tan|peru|sienna|crimson|turquoise|azure|beige|ivory|linen|lavender|mintcream|snow|wheat|seashell)$/i.test(s))return s;return '#22c55e';}
@@ -3198,20 +3225,19 @@ async function startSyncListeners(){
             const color = data.color || '#3b82f6';
             const visible = data.visible !== false;
             const idx = layers.length;
-            // Reconstruct GeoJSON layer on map
-            const geoJsonLayer = L.geoJSON(geojson,{
-              style:()=>({color,weight:2,fillColor:color,fillOpacity:0.3}),
-              pointToLayer:(feature,latlng)=>{
-                const ch=feature.properties?.name?.charAt(0)||'';
-                return L.marker(latlng,{
-                  icon:L.divIcon({
-                    html:'<div style="width:28px;height:28px;background:'+color+';border:3px solid white;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold">'+ch+'</div>',
-                    className:'',iconSize:[28,28],iconAnchor:[14,28],popupAnchor:[0,-28]
-                  })
-                }).bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
-              },
-              onEachFeature:(feature,layer)=>{
-                layer.bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
+            // Reconstruct GeoJSON layer on map (optimized for performance)
+            const pointFeatures=[];const otherFeatures=[];
+            geojson.features.forEach(function(f){
+              if(f.geometry&&(f.geometry.type==='Point'||f.geometry.type==='MultiPoint'))pointFeatures.push(f);
+              else otherFeatures.push(f);
+            });
+            const useCluster=pointFeatures.length>200;
+            let geoJsonLayer,pointClusterGroup=null;
+            const polyGeojson={type:'FeatureCollection',features:otherFeatures};
+            const polyLayer=L.geoJSON(polyGeojson,{
+              style:function(){return {color:color,weight:2,fillColor:color,fillOpacity:0.3};},
+              onEachFeature:function(feature,layer){
+                layer.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
                 if(layer.setStyle){
                   layer.on('mouseover',function(){this.setStyle({weight:3,fillOpacity:0.5});});
                   layer.on('mouseout',function(){this.setStyle({weight:2,fillOpacity:0.3});});
@@ -3219,17 +3245,61 @@ async function startSyncListeners(){
                 }
               }
             });
-
-            // Tag polygon layers (needed for polygon folder feature)
             let polySubIdx=0;
-            geoJsonLayer.eachLayer(layer=>{
+            polyLayer.eachLayer(function(layer){
               if(layer&&typeof layer.getLatLngs==='function'){
                 layer._polyGroupIdx=idx;layer._polySubIdx=polySubIdx;polySubIdx++;
               }
             });
+            const pointGeojson={type:'FeatureCollection',features:pointFeatures};
+            const currentZoom=map.getZoom();
+            const showLabels=currentZoom>=14;
+            const pointLayer=L.geoJSON(pointGeojson,{
+              pointToLayer:function(feature,latlng){
+                var name=feature.properties?.name||'';
+                var marker=L.circleMarker(latlng,{radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85});
+                marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
+                if(name){
+                  var label=name.length>25?name.substring(0,25)+'…':name;
+                  marker.bindTooltip(label,{permanent:true,direction:'right',offset:[8,-8],className:'geo-label-tooltip',opacity:0.95});
+                  if(!showLabels){
+                    try{marker.closeTooltip();}catch(e){}
+                    var tooltipEl=marker.getTooltip();
+                    if(tooltipEl&&tooltipEl._container)tooltipEl._container.style.display='none';
+                  }
+                }
+                return marker;
+              },
+              onEachFeature:function(feature,layer){}
+            });
+            if(useCluster){
+              pointClusterGroup=L.markerClusterGroup({
+                maxClusterRadius:50,spiderfyOnMaxZoom:true,showCoverageOnHover:false,
+                zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,maxZoom:18,
+                iconCreateFunction:function(cluster){
+                  var count=cluster.getChildCount();
+                  var size=count<100?'small':count<1000?'medium':'large';
+                  var dim=size==='small'?40:size==='medium'?50:60;
+                  return L.divIcon({
+                    html:'<div style="width:'+dim+'px;height:'+dim+'px;background:'+color+';border:3px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:'+(size==='small'?'12':'14')+'px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.3)">'+count+'</div>',
+                    className:'',iconSize:[dim,dim],iconAnchor:[dim/2,dim/2]
+                  });
+                }
+              });
+              pointClusterGroup.addLayer(pointLayer);
+              geoJsonLayer=L.layerGroup([polyLayer,pointClusterGroup]);
+            }else{
+              geoJsonLayer=L.layerGroup([polyLayer,pointLayer]);
+            }
+            geoJsonLayer._polyLayer=polyLayer;
+            geoJsonLayer._pointLayer=pointLayer;
+            geoJsonLayer._pointClusterGroup=pointClusterGroup;
+            geoJsonLayer._useCluster=useCluster;
+            geoJsonLayer._color=color;
+            geoJsonLayer._layerIdx=idx;
 
             if(visible && geoJsonLayers) geoJsonLayers.addLayer(geoJsonLayer);
-            layers.push({name:data.name,geojson,layerNames:data.layerNames||[],color,geoJsonLayer,visible,fileId:null,_layerId:data.id});
+            layers.push({name:data.name,geojson,layerNames:data.layerNames||[],color,geoJsonLayer,visible,fileId:null,_layerId:data.id,_useCluster:useCluster});
             renderLayers();
             renderSavedFiles();
 
@@ -3729,7 +3799,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   updateTileCacheUI();
   initFirebase();
 
-  document.getElementById('map').style.height='100%';document.getElementById('map').style.width='100%';map=L.map('map',{center:[-2.5,118],zoom:5,zoomControl:false,closePopupOnClick:true});
+  document.getElementById('map').style.height='100%';document.getElementById('map').style.width='100%';map=L.map('map',{center:[-2.5,118],zoom:5,zoomControl:false,closePopupOnClick:true,preferCanvas:true});
   tileLayer=new CachedTileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',{
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',maxZoom:19,
     subdomains:'abcd'
@@ -3740,6 +3810,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   L.control.zoom({position:'bottomright'}).addTo(map);
   geoJsonLayers=L.layerGroup().addTo(map);
   userMarkers=L.layerGroup().addTo(map);
+  // Zoom-based label visibility for performance
+  map.on('zoomend',function(){
+    const z=map.getZoom();
+    document.querySelectorAll('.geo-label-tooltip').forEach(function(el){
+      el.style.display=z>=14?'':'none';
+    });
+  });
   appReady=true;
 
   // Load saved state
@@ -4264,29 +4341,22 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   const layerNames=[];
   geojson.features.forEach(f=>{const n=f.properties?.name;if(n&&!layerNames.includes(n))layerNames.push(n);});
 
-  const geoJsonLayer=L.geoJSON(geojson,{
-    style:()=>({color,weight:2,fillColor:color,fillOpacity:0.3}),
-    pointToLayer:(feature,latlng)=>{
-      const name=feature.properties?.name||'';
-      const ch=name.charAt(0)||'';
-      const label=name.length>20?name.substring(0,20)+'…':name;
-      const marker=L.marker(latlng,{
-        icon:L.divIcon({
-          html:'<div style="width:28px;height:28px;background:'+color+';border:3px solid white;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold">'+ch+'</div>',
-          className:'',iconSize:[28,28],iconAnchor:[14,28],popupAnchor:[0,-28]
-        })
-      }).bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
-      if(label){
-        marker.bindTooltip(label,{
-          permanent:true,direction:'right',offset:[8,-14],
-          className:'geo-label-tooltip',
-          opacity:0.95
-        });
-      }
-      return marker;
-    },
-    onEachFeature:(feature,layer)=>{
-      layer.bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
+  // Performance: separate points vs polygons
+  const pointFeatures=[];const otherFeatures=[];
+  geojson.features.forEach(function(f){
+    if(f.geometry&&(f.geometry.type==='Point'||f.geometry.type==='MultiPoint'))pointFeatures.push(f);
+    else otherFeatures.push(f);
+  });
+
+  const useCluster=pointFeatures.length>200;
+  let geoJsonLayer,pointClusterGroup=null;
+
+  // Render non-point features (polygons, lines) normally
+  const polyGeojson={type:'FeatureCollection',features:otherFeatures};
+  const polyLayer=L.geoJSON(polyGeojson,{
+    style:function(){return {color:color,weight:2,fillColor:color,fillOpacity:0.3};},
+    onEachFeature:function(feature,layer){
+      layer.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
       if(layer.setStyle){
         layer.on('mouseover',function(){this.setStyle({weight:3,fillOpacity:0.5});});
         layer.on('mouseout',function(){this.setStyle({weight:2,fillOpacity:0.3});});
@@ -4294,18 +4364,74 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
       }
     }
   });
-
-  // Tag polygon layers
   let polySubIdx=0;
-  geoJsonLayer.eachLayer(layer=>{
+  polyLayer.eachLayer(function(layer){
     if(layer&&typeof layer.getLatLngs==='function'){
       layer._polyGroupIdx=idx;layer._polySubIdx=polySubIdx;polySubIdx++;
     }
   });
 
+  // Render point features with circleMarker (canvas) + optional clustering
+  const pointGeojson={type:'FeatureCollection',features:pointFeatures};
+  const currentZoom=map.getZoom();
+  const showLabels=currentZoom>=14;
+
+  const pointLayer=L.geoJSON(pointGeojson,{
+    pointToLayer:function(feature,latlng){
+      const name=feature.properties?.name||'';
+      const marker=L.circleMarker(latlng,{
+        radius:7,fillColor:color,color:'#fff',weight:2,opacity:1,fillOpacity:0.85
+      });
+      marker.bindPopup(function(){return buildFeaturePopup(feature);},{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
+      if(name){
+        const label=name.length>25?name.substring(0,25)+'…':name;
+        const tt=marker.bindTooltip(label,{
+          permanent:true,direction:'right',offset:[8,-8],
+          className:'geo-label-tooltip',opacity:0.95
+        });
+        if(!showLabels){
+          try{marker.closeTooltip();}catch(e){}
+          var tooltipEl=marker.getTooltip();
+          if(tooltipEl&&tooltipEl._container)tooltipEl._container.style.display='none';
+        }
+      }
+      return marker;
+    },
+    onEachFeature:function(feature,layer){}
+  });
+
+  if(useCluster){
+    pointClusterGroup=L.markerClusterGroup({
+      maxClusterRadius:50,spiderfyOnMaxZoom:true,showCoverageOnHover:false,
+      zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,maxZoom:18,
+      iconCreateFunction:function(cluster){
+        var count=cluster.getChildCount();
+        var size=count<100?'small':count<1000?'medium':'large';
+        var dim=size==='small'?40:size==='medium'?50:60;
+        return L.divIcon({
+          html:'<div style="width:'+dim+'px;height:'+dim+'px;background:'+color+';border:3px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:'+(size==='small'?'12':'14')+'px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.3)">'+count+'</div>',
+          className:'',iconSize:[dim,dim],iconAnchor:[dim/2,dim/2]
+        });
+      }
+    });
+    pointClusterGroup.addLayer(pointLayer);
+    // Merge into one layer group: polygons + clustered points
+    geoJsonLayer=L.layerGroup([polyLayer,pointClusterGroup]);
+  }else{
+    geoJsonLayer=L.layerGroup([polyLayer,pointLayer]);
+  }
+
+  // Tag polygon layers on the merged group
+  geoJsonLayer._polyLayer=polyLayer;
+  geoJsonLayer._pointLayer=pointLayer;
+  geoJsonLayer._pointClusterGroup=pointClusterGroup;
+  geoJsonLayer._useCluster=useCluster;
+  geoJsonLayer._color=color;
+  geoJsonLayer._layerIdx=idx;
+
   const visible=setVisible!==false;
   if(visible&&geoJsonLayers)geoJsonLayers.addLayer(geoJsonLayer);
-  const layerObj = {name:fileName,geojson,layerNames,color,geoJsonLayer,visible,fileId:fileId||null,_layerId:'layer-'+Date.now()+'-'+Math.random().toString(36).substring(2,8)};
+  const layerObj = {name:fileName,geojson,layerNames,color,geoJsonLayer,visible,fileId:fileId||null,_layerId:'layer-'+Date.now()+'-'+Math.random().toString(36).substring(2,8),_useCluster:useCluster};
   layers.push(layerObj);
   if(visible&&geoJsonLayer.getBounds().isValid())map.fitBounds(geoJsonLayer.getBounds().pad(0.1));
   renderLayers();
@@ -4757,7 +4883,7 @@ function setGeoJsonInteractive(interactive){
   if(!appReady||!layers)return;
   layers.forEach(l=>{
     if(!l.visible||!l.geoJsonLayer)return;
-    l.geoJsonLayer.eachLayer(sub=>{
+    eachGeoLeafLayer(l.geoJsonLayer, function(sub){
       try{
         sub.options.interactive=interactive;
         const el=sub.getElement&&sub.getElement();
@@ -5579,7 +5705,7 @@ function createPolygonFolder(){
 function findPolyLayer(groupIdx,subIdx){
   const l=layers[groupIdx];if(!l)return null;
   let idx=0,found=null;
-  l.geoJsonLayer.eachLayer(layer=>{if(found)return;if(layer&&typeof layer.getLatLngs==='function'){if(idx===subIdx)found=layer;idx++;}});
+  eachGeoLeafLayer(l.geoJsonLayer, function(layer){if(found)return;if(layer&&typeof layer.getLatLngs==='function'){if(idx===subIdx)found=layer;idx++;}});
   return found;
 }
 
@@ -5678,7 +5804,7 @@ async function exportAllToKmz(){
   const allPolygons=[];
   layers.forEach((l,li)=>{
     let subIdx=0;
-    l.geoJsonLayer.eachLayer(layer=>{
+    eachGeoLeafLayer(l.geoJsonLayer, function(layer){
       if(!layer||!layer.feature)return;
       if(typeof layer.getLatLngs==='function'){
         allPolygons.push({layer,groupIdx:li,subLayerIdx:subIdx,feature:layer.feature,color:l.color});
@@ -5800,7 +5926,7 @@ async function exportSelectedToKmz(){
   selectedLayerIdxs.forEach(li=>{
     const l=layers[li];if(!l)return;
     let polySubIdx=0;
-    l.geoJsonLayer.eachLayer(layer=>{
+    eachGeoLeafLayer(l.geoJsonLayer, function(layer){
       if(!layer||!layer.feature)return;
       if(typeof layer.getLatLngs==='function'){
         selPolygons.push({layer,groupIdx:li,subLayerIdx:polySubIdx,feature:layer.feature,color:l.color});
@@ -5943,7 +6069,7 @@ async function exportAllPolygonsToKmz(){
   const allPolygons=[];
   layers.forEach((l,li)=>{
     let subIdx=0;
-    l.geoJsonLayer.eachLayer(layer=>{
+    eachGeoLeafLayer(l.geoJsonLayer, function(layer){
       if(layer&&typeof layer.getLatLngs==='function'){
         allPolygons.push({layer,groupIdx:li,subLayerIdx:subIdx,feature:layer.feature,color:l.color});
         subIdx++;
@@ -5998,7 +6124,7 @@ async function exportSelectedLayersToKmz(){
   selectedLayerIdxs.forEach(li=>{
     const l=layers[li];if(!l)return;
     let polySubIdx=0,pointIdx=0;
-    l.geoJsonLayer.eachLayer(layer=>{
+    eachGeoLeafLayer(l.geoJsonLayer, function(layer){
       if(!layer||!layer.feature)return;
       if(typeof layer.getLatLngs==='function'){
         selPolygons.push({layer,groupIdx:li,subLayerIdx:polySubIdx,feature:layer.feature,color:l.color});
@@ -6151,6 +6277,9 @@ const ASSETS_TO_CACHE = [
   './',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
   'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js',
   'https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js',
   'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js',
@@ -6208,6 +6337,9 @@ self.addEventListener('fetch', event => {
     const ASSETS = [
       'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
       'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+      'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+      'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css',
+      'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
       'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js',
       'https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js',
       'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js',
