@@ -4177,37 +4177,102 @@ async function fetchFromUrl(url) {
   throw new Error('Gagal mengunduh file (semua proxy gagal). Tips: coba paste URL lain, atau download file-nya lalu upload manual.');
 }
 
-async function parseGeoDataFromResponse(response, format) {
-  const parser = new DOMParser();
+// ===== INLINE WEB WORKER FOR HEAVY PARSING =====
+const GEO_WORKER_CODE = `
+importScripts('https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js');
+self.onmessage = function(e) {
+  var d = e.data;
+  try {
+    var parser = new DOMParser();
+    var geojson;
+    if (d.format === 'kmz') {
+      // For KMZ, we need JSZip - send arrayBuffer, parse in main thread fallback
+      // But we can handle KML text directly
+      var text = d.text;
+      geojson = toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
+    } else if (d.format === 'kml') {
+      var text = d.text;
+      self.postMessage({type:'progress', msg:'Parsing KML...'});
+      geojson = toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
+    } else if (d.format === 'gpx') {
+      var text = d.text;
+      geojson = toGeoJSON.gpx(parser.parseFromString(text, 'text/xml'));
+    } else if (d.format === 'geojson') {
+      geojson = JSON.parse(d.text);
+    } else {
+      self.postMessage({type:'error', msg:'Format tidak dikenali: '+d.format});
+      return;
+    }
+    self.postMessage({type:'progress', msg:'Selesai parsing, mengirim data...'});
+    self.postMessage({type:'result', geojson: geojson});
+  } catch(err) {
+    self.postMessage({type:'error', msg: err.message || 'Gagal memparse file'});
+  }
+};
+`;
+let geoWorker = null;
+function getGeoWorker() {
+  if (!geoWorker) {
+    var blob = new Blob([GEO_WORKER_CODE], {type: 'application/javascript'});
+    geoWorker = new Worker(URL.createObjectURL(blob));
+  }
+  return geoWorker;
+}
 
+async function parseGeoDataFromResponse(response, format, statusFn) {
+  // For KMZ, we need JSZip which is only on main thread
   if (format === 'kmz') {
     const buffer = await response.arrayBuffer();
+    statusFn && statusFn('Ekstrak KMZ...');
     const zip = await JSZip.loadAsync(buffer);
     const kmlFile = Object.keys(zip.files).find(n => n.endsWith('.kml'));
     if (!kmlFile) throw new Error('Tidak ada file KML di dalam KMZ');
     const kmlText = await zip.files[kmlFile].async('text');
-    return toGeoJSON.kml(parser.parseFromString(kmlText, 'text/xml'));
+    // Parse the extracted KML in worker
+    return parseInWorker(kmlText, 'kml', statusFn);
   }
 
-  if (format === 'kml') {
-    const text = await response.text();
-    return toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
-  }
+  // For KML, GPX, GeoJSON - use worker
+  const text = await response.text();
+  return parseInWorker(text, format, statusFn);
+}
 
-  if (format === 'geojson') {
-    const text = await response.text();
-    const data = JSON.parse(text);
-    if (!data || !data.features || !Array.isArray(data.features))
-      throw new Error('Format GeoJSON tidak valid: tidak ditemukan array features');
-    return data;
-  }
-
-  if (format === 'gpx') {
-    const text = await response.text();
-    return toGeoJSON.gpx(parser.parseFromString(text, 'text/xml'));
-  }
-
-  throw new Error('Format tidak dikenali');
+function parseInWorker(text, format, statusFn) {
+  return new Promise(function(resolve, reject) {
+    // Yield to UI first so status message renders
+    setTimeout(function() {
+      try {
+        var worker = getGeoWorker();
+        worker.onmessage = function(e) {
+          if (e.data.type === 'progress') {
+            statusFn && statusFn(e.data.msg);
+          } else if (e.data.type === 'result') {
+            resolve(e.data.geojson);
+          } else if (e.data.type === 'error') {
+            reject(new Error(e.data.msg));
+          }
+        };
+        worker.onerror = function(err) {
+          // Fallback: parse on main thread if worker fails
+          console.warn('Worker failed, parsing on main thread:', err.message);
+          statusFn && statusFn('Parsing di main thread (fallback)...');
+          setTimeout(function() {
+            try {
+              var parser = new DOMParser();
+              var geojson;
+              if (format === 'kml') geojson = toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
+              else if (format === 'gpx') geojson = toGeoJSON.gpx(parser.parseFromString(text, 'text/xml'));
+              else if (format === 'geojson') geojson = JSON.parse(text);
+              else throw new Error('Format tidak dikenali');
+              resolve(geojson);
+            } catch(e2) { reject(e2); }
+          }, 50);
+        };
+        statusFn && statusFn('Memproses ' + text.length + ' karakter...');
+        worker.postMessage({text: text, format: format});
+      } catch(e) { reject(e); }
+    }, 50);
+  });
 }
 
 async function handleUrlImport() {
@@ -4262,7 +4327,9 @@ async function handleUrlImport() {
     }
 
     showUrlStatus('Memproses file ' + format.toUpperCase() + '...', 'blue');
-    const geojson = await parseGeoDataFromResponse(response, format);
+    const geojson = await parseGeoDataFromResponse(response, format, function(msg) {
+      showUrlStatus(msg, 'blue');
+    });
 
     if (!geojson || !geojson.features || geojson.features.length === 0) {
       await appAlert('Tidak ada feature ditemukan dalam file');
@@ -4271,6 +4338,8 @@ async function handleUrlImport() {
     }
 
     // Add as layer (no fileId since it's from URL)
+    showUrlStatus('Menambahkan ' + geojson.features.length + ' feature ke peta...', 'blue');
+    await new Promise(function(r){setTimeout(r,30);}); // yield to UI
     addGeoJsonLayer('[URL] ' + fileName, geojson, true, null);
     addToUrlHistory(url);
     showUrlStatus('Berhasil! ' + geojson.features.length + ' feature dimuat dari URL', 'green');
@@ -4339,14 +4408,22 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   const idx=layers.length;
   const color=LAYER_COLORS[idx%LAYER_COLORS.length];
   const layerNames=[];
-  geojson.features.forEach(f=>{const n=f.properties?.name;if(n&&!layerNames.includes(n))layerNames.push(n);});
+  // Performance: limit layerNames extraction for large datasets
+  const nameSet=new Set();
+  const maxNames=500;
+  for(var i=0;i<geojson.features.length&&nameSet.size<maxNames;i++){
+    const n=geojson.features[i].properties?.name;
+    if(n)nameSet.add(n);
+  }
+  nameSet.forEach(function(n){layerNames.push(n);});
 
   // Performance: separate points vs polygons
   const pointFeatures=[];const otherFeatures=[];
-  geojson.features.forEach(function(f){
+  for(var i=0;i<geojson.features.length;i++){
+    const f=geojson.features[i];
     if(f.geometry&&(f.geometry.type==='Point'||f.geometry.type==='MultiPoint'))pointFeatures.push(f);
     else otherFeatures.push(f);
-  });
+  }
 
   const useCluster=pointFeatures.length>200;
   let geoJsonLayer,pointClusterGroup=null;
