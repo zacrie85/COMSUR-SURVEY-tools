@@ -3253,7 +3253,7 @@ async function startSyncListeners(){
             });
             const pointGeojson={type:'FeatureCollection',features:pointFeatures};
             const currentZoom=map.getZoom();
-            const showLabels=currentZoom>=13;
+            const showLabels=currentZoom>=15;
             const pointLayer=L.geoJSON(pointGeojson,{
               pointToLayer:function(feature,latlng){
                 var name=feature.properties?.name||'';
@@ -3834,7 +3834,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   map.on('zoomend',function(){
     const z=map.getZoom();
     document.querySelectorAll('.geo-label-tooltip').forEach(function(el){
-      el.style.display=z>=13?'':'none';
+      el.style.display=z>=15?'':'none';
     });
   });
   appReady=true;
@@ -4452,7 +4452,7 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   // Render point features with circleMarker (canvas) + optional clustering
   const pointGeojson={type:'FeatureCollection',features:pointFeatures};
   const currentZoom=map.getZoom();
-  const showLabels=currentZoom>=13;
+  const showLabels=currentZoom>=15;
 
   const pointLayer=L.geoJSON(pointGeojson,{
     pointToLayer:function(feature,latlng){
