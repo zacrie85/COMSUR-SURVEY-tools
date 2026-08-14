@@ -230,6 +230,8 @@ window.addEventListener('unhandledrejection',function(ev){
 .btn-settings:hover{background:#f3f4f6;color:#6b7280}
 .btn-settings.hidden-settings{display:none!important}
 
+.geo-label-tooltip{background:rgba(255,255,255,.92)!important;border:1px solid rgba(0,0,0,.12)!important;border-radius:4px!important;padding:2px 6px!important;font-size:10px!important;font-weight:600!important;color:#1e293b!important;box-shadow:0 1px 4px rgba(0,0,0,.15)!important;white-space:nowrap!important;max-width:200px!important;overflow:hidden!important;text-overflow:ellipsis!important;}
+.geo-label-tooltip::before{border-right-color:rgba(255,255,255,.92)!important;}
 </style>
 
 <body>
@@ -4265,13 +4267,23 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   const geoJsonLayer=L.geoJSON(geojson,{
     style:()=>({color,weight:2,fillColor:color,fillOpacity:0.3}),
     pointToLayer:(feature,latlng)=>{
-      const ch=feature.properties?.name?.charAt(0)||'';
-      return L.marker(latlng,{
+      const name=feature.properties?.name||'';
+      const ch=name.charAt(0)||'';
+      const label=name.length>20?name.substring(0,20)+'…':name;
+      const marker=L.marker(latlng,{
         icon:L.divIcon({
           html:'<div style="width:28px;height:28px;background:'+color+';border:3px solid white;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:bold">'+ch+'</div>',
           className:'',iconSize:[28,28],iconAnchor:[14,28],popupAnchor:[0,-28]
         })
       }).bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
+      if(label){
+        marker.bindTooltip(label,{
+          permanent:true,direction:'right',offset:[8,-14],
+          className:'geo-label-tooltip',
+          opacity:0.95
+        });
+      }
+      return marker;
     },
     onEachFeature:(feature,layer)=>{
       layer.bindPopup(()=>buildFeaturePopup(feature),{maxWidth:310,minWidth:220,maxHeight:null,autoPan:true,autoPanPaddingTopLeft:[10,10],autoPanPaddingBottomRight:[10,10]});
