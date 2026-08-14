@@ -3253,7 +3253,7 @@ async function startSyncListeners(){
             });
             const pointGeojson={type:'FeatureCollection',features:pointFeatures};
             const currentZoom=map.getZoom();
-            const showLabels=currentZoom>=14;
+            const showLabels=currentZoom>=13;
             const pointLayer=L.geoJSON(pointGeojson,{
               pointToLayer:function(feature,latlng){
                 var name=feature.properties?.name||'';
@@ -3275,7 +3275,8 @@ async function startSyncListeners(){
             if(useCluster){
               pointClusterGroup=L.markerClusterGroup({
                 maxClusterRadius:50,spiderfyOnMaxZoom:true,showCoverageOnHover:false,
-                zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,maxZoom:18,
+                zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,
+                disableClusteringAtZoom:13,
                 iconCreateFunction:function(cluster){
                   var count=cluster.getChildCount();
                   var size=count<100?'small':count<1000?'medium':'large';
@@ -3833,7 +3834,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   map.on('zoomend',function(){
     const z=map.getZoom();
     document.querySelectorAll('.geo-label-tooltip').forEach(function(el){
-      el.style.display=z>=14?'':'none';
+      el.style.display=z>=13?'':'none';
     });
   });
   appReady=true;
@@ -4451,7 +4452,7 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   // Render point features with circleMarker (canvas) + optional clustering
   const pointGeojson={type:'FeatureCollection',features:pointFeatures};
   const currentZoom=map.getZoom();
-  const showLabels=currentZoom>=14;
+  const showLabels=currentZoom>=13;
 
   const pointLayer=L.geoJSON(pointGeojson,{
     pointToLayer:function(feature,latlng){
@@ -4480,7 +4481,8 @@ function addGeoJsonLayer(fileName,geojson,setVisible,fileId){
   if(useCluster){
     pointClusterGroup=L.markerClusterGroup({
       maxClusterRadius:50,spiderfyOnMaxZoom:true,showCoverageOnHover:false,
-      zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,maxZoom:18,
+      zoomToBoundsOnClick:true,chunkedLoading:true,chunkInterval:50,
+      disableClusteringAtZoom:13,
       iconCreateFunction:function(cluster){
         var count=cluster.getChildCount();
         var size=count<100?'small':count<1000?'medium':'large';
