@@ -4734,6 +4734,7 @@ async function parseGeoFile(file){
       var nlResult = await resolveNetworkLinks(kmlText, function(){});
       if(nlResult) geojson = nlResult;
     }
+    hideParseOverlay();
     return geojson;
   }
 
@@ -4745,6 +4746,7 @@ async function parseGeoFile(file){
       var nlResult = await resolveNetworkLinks(text, function(){});
       if(nlResult) geojson = nlResult;
     }
+    hideParseOverlay();
     return geojson;
   }
 
@@ -4767,11 +4769,13 @@ async function parseGeoFile(file){
 async function loadFileAsLayer(file,setVisible,fileId){
   try{
     const geojson = await parseGeoFile(file);
+    hideParseOverlay();
     if(!geojson||!geojson.features||geojson.features.length===0){
       await appAlert('Tidak ada feature ditemukan dalam file');return;
     }
     addGeoJsonLayer(file.name,geojson,setVisible,fileId);
   }catch(err){
+    hideParseOverlay();
     await appAlert(err.message||'Gagal memuat file');
   }
 }
