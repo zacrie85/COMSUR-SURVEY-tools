@@ -4513,7 +4513,12 @@ async function parseGeoDataFromResponse(response, format, statusFn) {
     showParseOverlay('Parsing KML...');
     await yieldToUI(80);
     const parser = new DOMParser();
-    const geojson = toGeoJSON.kml(parser.parseFromString(kmlText, 'text/xml'));
+    var geojson = toGeoJSON.kml(parser.parseFromString(kmlText, 'text/xml'));
+    // Check for NetworkLink if no features
+    if (!geojson.features || geojson.features.length === 0) {
+      var nlResult = await resolveNetworkLinks(kmlText, statusFn);
+      if (nlResult) geojson = nlResult;
+    }
     hideParseOverlay();
     return geojson;
   }
@@ -4524,7 +4529,12 @@ async function parseGeoDataFromResponse(response, format, statusFn) {
     showParseOverlay('Parsing KML...');
     await yieldToUI(80);
     const parser = new DOMParser();
-    const geojson = toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
+    var geojson = toGeoJSON.kml(parser.parseFromString(text, 'text/xml'));
+    // Check for NetworkLink if no features
+    if (!geojson.features || geojson.features.length === 0) {
+      var nlResult = await resolveNetworkLinks(text, statusFn);
+      if (nlResult) geojson = nlResult;
+    }
     hideParseOverlay();
     return geojson;
   }
@@ -4638,6 +4648,76 @@ async function handleUrlImport() {
   }
 }
 
+// ===== NETWORK LINK RESOLVER — Follow KML NetworkLink href to fetch real data =====
+async function resolveNetworkLinks(kmlText, statusFn) {
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(kmlText, 'text/xml');
+  var ns = 'http://www.opengis.net/kml/2.2';
+  var networkLinks = doc.getElementsByTagNameNS(ns, 'NetworkLink');
+  // Fallback: try without namespace
+  if (networkLinks.length === 0) networkLinks = doc.getElementsByTagName('NetworkLink');
+
+  if (networkLinks.length === 0) return null;
+
+  var allFeatures = [];
+
+  for (var i = 0; i < networkLinks.length; i++) {
+    var nl = networkLinks[i];
+    var linkEl = nl.getElementsByTagNameNS(ns, 'Link')[0] || nl.getElementsByTagName('Link')[0];
+    if (!linkEl) continue;
+    var hrefEl = linkEl.getElementsByTagNameNS(ns, 'href')[0] || linkEl.getElementsByTagName('href')[0];
+    if (!hrefEl) continue;
+
+    var href = hrefEl.textContent.trim();
+    if (!href || (!href.startsWith('http://') && !href.startsWith('https://'))) continue;
+
+    var nlName = '';
+    var nameEl = nl.getElementsByTagNameNS(ns, 'name')[0] || nl.getElementsByTagName('name')[0];
+    if (nameEl) nlName = nameEl.textContent.trim();
+
+    statusFn && statusFn('Mengikuti NetworkLink: ' + (nlName || href.substring(0, 60)) + '...');
+    showParseOverlay('Fetch NetworkLink...');
+    await yieldToUI(50);
+
+    try {
+      var response = await fetchFromUrl(href);
+      var contentType = response.headers.get('content-type') || '';
+      var text = await response.text();
+
+      statusFn && statusFn('Parsing data NetworkLink (' + (text.length / 1024).toFixed(0) + ' KB)...');
+      showParseOverlay('Parsing NetworkLink...');
+      await yieldToUI(50);
+
+      var parser2 = new DOMParser();
+      var geojson;
+
+      if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+        var data = JSON.parse(text);
+        if (data && data.features) geojson = data;
+      } else {
+        geojson = toGeoJSON.kml(parser2.parseFromString(text, 'text/xml'));
+      }
+
+      // Recursive: check if fetched KML also has NetworkLinks
+      if (geojson && geojson.features && geojson.features.length > 0) {
+        allFeatures = allFeatures.concat(geojson.features);
+      } else {
+        // Maybe nested NetworkLink
+        var nestedResult = await resolveNetworkLinks(text, statusFn);
+        if (nestedResult && nestedResult.features) {
+          allFeatures = allFeatures.concat(nestedResult.features);
+        }
+      }
+    } catch(err) {
+      console.warn('Gagal mengikuti NetworkLink:', href, err);
+      statusFn && statusFn('Gagal NetworkLink: ' + href.substring(0, 50) + '...');
+    }
+  }
+
+  if (allFeatures.length === 0) return null;
+  return { type: 'FeatureCollection', features: allFeatures };
+}
+
 // ===== GEO FILE PARSER (modular) =====
 async function parseGeoFile(file){
   const fileName = file.name.toLowerCase();
@@ -4648,12 +4728,24 @@ async function parseGeoFile(file){
     const kmlFile = Object.keys(zip.files).find(n=>n.endsWith('.kml'));
     if(!kmlFile) throw new Error('Tidak ada file KML di dalam KMZ');
     const kmlText = await zip.files[kmlFile].async('text');
-    return toGeoJSON.kml(parser.parseFromString(kmlText,'text/xml'));
+    var geojson = toGeoJSON.kml(parser.parseFromString(kmlText,'text/xml'));
+    // Check for NetworkLink if no features
+    if(!geojson.features || geojson.features.length === 0){
+      var nlResult = await resolveNetworkLinks(kmlText, function(){});
+      if(nlResult) geojson = nlResult;
+    }
+    return geojson;
   }
 
   if(fileName.endsWith('.kml')){
     const text = await file.text();
-    return toGeoJSON.kml(parser.parseFromString(text,'text/xml'));
+    var geojson = toGeoJSON.kml(parser.parseFromString(text,'text/xml'));
+    // Check for NetworkLink if no features
+    if(!geojson.features || geojson.features.length === 0){
+      var nlResult = await resolveNetworkLinks(text, function(){});
+      if(nlResult) geojson = nlResult;
+    }
+    return geojson;
   }
 
   if(fileName.endsWith('.geojson')||fileName.endsWith('.json')){
