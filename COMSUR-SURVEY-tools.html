@@ -2109,6 +2109,17 @@ async function deleteSelectedProjects(){
     const pid = cb.getAttribute('data-project-id');
     const pname = cb.getAttribute('data-project-name');
     try{
+      // Permission check: only creator or admin can delete
+      const isAppAdmin = isAdminUser || (currentUser && appAdminUid && currentUser.uid === appAdminUid);
+      const projDoc = await fbDb.collection('projects').doc(pid).get();
+      if(projDoc.exists){
+        const projData = projDoc.data();
+        const isCreator = projData.createdBy === currentUser.uid;
+        if(!isCreator && !isAppAdmin){
+          showToast('Tidak bisa hapus "'+pname+'" — hanya pembuat atau admin','error');
+          failCount++;continue;
+        }
+      }
       const projRef = fbDb.collection('projects').doc(pid);
       const subCollections = ['markers','folders','polygonFolders','counters','layers'];
       for(const subCol of subCollections){
@@ -2188,11 +2199,17 @@ async function loadProjectList(){
       const escName = esc(d.name).replace(/'/g,"\\'");
 
       if(isDeleteMode){
-        // Checkbox mode for bulk deletion
-        listHtml.push('<div class="project-card project-card-delete-mode '+(isActive?'active':'')+'"><input type="checkbox" class="delete-mode-checkbox" data-project-id="'+docId+'" data-project-name="'+escName+'" onchange="updateDeleteCount()" onclick="event.stopPropagation()"><div class="project-info"><p class="text-xs font-semibold text-gray-700">'+esc(d.name)+'</p>'+(d.description?'<p class="text-[10px] text-gray-400 truncate">'+esc(d.description)+'</p>':'')+'<p class="text-[9px] text-gray-300 mt-1">'+dateStr+'</p>'+creatorInfo+'</div></div>');
+        // Checkbox mode for bulk deletion (only show projects this user can delete)
+        const isAppAdmin = isAdminUser || (currentUser && appAdminUid && currentUser.uid === appAdminUid);
+        const canDelete = isAppAdmin || d.createdBy === currentUser.uid;
+        if(canDelete){
+          listHtml.push('<div class="project-card project-card-delete-mode '+(isActive?'active':'')+'"><input type="checkbox" class="delete-mode-checkbox" data-project-id="'+docId+'" data-project-name="'+escName+'" onchange="updateDeleteCount()" onclick="event.stopPropagation()"><div class="project-info"><p class="text-xs font-semibold text-gray-700">'+esc(d.name)+'</p>'+(d.description?'<p class="text-[10px] text-gray-400 truncate">'+esc(d.description)+'</p>':'')+'<p class="text-[9px] text-gray-300 mt-1">'+dateStr+'</p>'+creatorInfo+'</div></div>');
+        }
       }else{
-        // Normal mode: each card has a trash icon button
-        const deleteBtn = '<button class="delete-project-btn" onclick="event.stopPropagation();deleteProject(\''+docId+'\',\''+escName+'\')" title="Hapus proyek ini">'+trashSvg+'</button>';
+        // Normal mode: show trash button only for creator or admin
+        const isAppAdmin = isAdminUser || (currentUser && appAdminUid && currentUser.uid === appAdminUid);
+        const canDelete = isAppAdmin || d.createdBy === currentUser.uid;
+        const deleteBtn = canDelete ? '<button class="delete-project-btn" onclick="event.stopPropagation();deleteProject(\''+docId+'\',\''+escName+'\')" title="Hapus proyek ini">'+trashSvg+'</button>' : '';
         listHtml.push('<div class="project-card '+(isActive?'active':'')+'" onclick="switchProject(\''+docId+'\')"><div class="project-info"><p class="text-xs font-semibold text-gray-700">'+esc(d.name)+'</p>'+(d.description?'<p class="text-[10px] text-gray-400 truncate">'+esc(d.description)+'</p>':'')+'<p class="text-[9px] text-gray-300 mt-1">'+dateStr+'</p>'+creatorInfo+'</div>'+deleteBtn+'</div>');
       }
     });
@@ -2810,14 +2827,14 @@ async function deleteProject(projectId, projectName){
   try{
     updateSyncStatus('syncing','Menghapus...');
 
-    // Verify user has permission (is creator or member)
+    // Verify user has permission (only creator or admin can delete)
+    const isAppAdmin = isAdminUser || (currentUser && appAdminUid && currentUser.uid === appAdminUid);
     const projDoc = await fbDb.collection('projects').doc(projectId).get();
     if(projDoc.exists){
       const projData = projDoc.data();
       const isCreator = projData.createdBy === currentUser.uid;
-      const isMember = projData.members && projData.members.includes(currentUser.uid);
-      if(!isCreator && !isMember){
-        showToast('Kamu tidak punya akses untuk menghapus proyek ini','error');
+      if(!isCreator && !isAppAdmin){
+        showToast('Hanya pembuat proyek atau admin yang bisa menghapus','error');
         updateSyncStatus('online','Tersinkron');
         return;
       }
@@ -2872,7 +2889,7 @@ async function deleteProject(projectId, projectName){
   }catch(e){
     console.error('Delete project error:',e);
     let msg = 'Gagal menghapus proyek: '+e.message;
-    if(e.code==='permission-denied') msg='Akses ditolak! Hanya pembuat proyek yang bisa menghapus.';
+    if(e.code==='permission-denied') msg='Akses ditolak! Hanya pembuat proyek atau admin yang bisa menghapus.';
     showToast(msg,'error');
     updateSyncStatus('online','Error');
   }
