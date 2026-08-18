@@ -2167,18 +2167,12 @@ async function loadProjectList(){
   if(!isFirebaseReady||!currentUser) return;
   let docs = [];
   try{
-    // Ambil proyek yang user ini adalah member-nya (client-side filter untuk keamanan)
+    // Ambil semua proyek (semua user login bisa melihat)
     const snapshot = await fbDb.collection('projects').get();
 
     // Sort di JavaScript (bukan di Firestore) agar tidak perlu composite index
-    // Filter: hanya tampilkan proyek yang user ini adalah member-nya
     snapshot.forEach(doc=> {
-      const data = doc.data();
-      const isMember = data.members && Array.isArray(data.members) && data.members.includes(currentUser.uid);
-      const isCreator = data.createdBy === currentUser.uid;
-      if(isMember || isCreator){
-        docs.push({id:doc.id,data:data});
-      }
+      docs.push({id:doc.id,data:doc.data()});
     });
     docs.sort((a,b)=>{
       const ta = a.data.createdAt ? (a.data.createdAt.toDate ? a.data.createdAt.toDate() : new Date(a.data.createdAt)) : new Date(0);
